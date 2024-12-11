@@ -1,0 +1,216 @@
+---
+title: 'Practical ML course: prediction assignment'
+author: "avuyonke balfour"
+date: "2024-12-08"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Background
+
+```{r}
+# Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: 
+#  http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+#   (see the section on the Weight Lifting Exercise Dataset).
+# 
+#                                        Aims of project
+# 
+#  Use 'classe' variable as outcome and other variables to understand/predict how efficiently participants did exercises
+#                                        My approach
+#  
+#  1. Load libraries and training data and split training dataset data into 2 sets (training and evalulation)
+#  2. Decide how to deal with missing values. 
+#  3. Do EDA, check distributions
+#  4. Train models:
+#    I will be running tree based models and an ensemble model
+#    classification tree with rpart, random forest model, gbm model , and an lda model.
+#  5. Estimate out of sample accuracies
+#  6. Run on validation set and evaluate performance
+#  7. Run predictions on test set
+```
+
+#   Load libraries 
+
+```{r load libraries, message = F}
+library(tidyverse)
+library(ggpubr)
+library(caret)
+library(rattle)
+library(rpart.plot)
+```
+
+#   Store urls and load data
+
+```{r laod data, message = F}
+train_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+test_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+train_data <- read_csv(train_url)
+test_data <- read_csv(test_url)
+```
+
+#   Split and preprocess data
+
+```{r preprocessing, message=F}
+# split data into training set and validation set
+training_data <- train_data[, -c(1:7)] # remove first 7 columns
+
+training_clean <- training_data%>%select_if(~ !any(is.na(.))) # remove columns with missing values
+dim(training_clean)
+
+training_clean$classe <- as.factor(training_clean$classe)
+
+set.seed(233)
+inTrain <- createDataPartition(training_clean$classe, p = 0.7, list = F)
+
+train <- training_clean[inTrain,]
+validate <- training_clean[-inTrain,]
+
+dim(train)
+dim(validate)
+```
+
+#   Exploratory data analysis
+
+```{r eda, message= F}
+names(training_clean)
+dev.off()
+
+# check relationships in first 5 features
+featurePlot(train[, 1:5], 
+            y = train$classe, 
+            plot = "pairs")
+dev.off()
+
+a <- train%>%
+  ggplot(aes(roll_arm, fill = classe))+
+  geom_density()+
+  theme_bw()
+
+b <- train%>%
+  ggplot(aes(pitch_arm, fill = classe))+
+  geom_density()+
+  theme_bw()
+
+c <- train%>%
+  ggplot(aes(yaw_arm, fill = classe))+
+  geom_density()+
+  theme_bw()
+
+ggarrange(a, b, c, ncol = 3)
+
+d <- train%>%
+  ggplot(aes(roll_forearm, fill = classe))+
+  geom_density()+
+  theme_bw()
+
+e <- train%>%
+  ggplot(aes(pitch_forearm, fill = classe))+
+  geom_density()+
+  theme_bw()
+
+f <- train%>%
+  ggplot(aes(yaw_forearm, fill = classe))+
+  geom_density()+
+  theme_bw()
+ggarrange(d, e, f, ncol = 3)
+```
+
+#   Train models
+
+```{r model training, message= F, warning = F}
+# cross validation settings: 5 fold cross validation
+cv_settings <- trainControl(method = "cv", n = 5)
+
+#                                           Classification tree
+set.seed(100)
+tree_model <- train(classe~., method = "rpart", data = train, trControl = cv_settings)
+
+tree_model$finalModel
+#fancyRpartPlot(tree_model$finalModel, main = "Classification tree for 'classe' prediction")
+rpart.plot(tree_model$finalModel, yesno = TRUE)
+
+tree_pred <- predict(tree_model, validate, type = "raw")
+confusionMatrix(tree_pred, validate$classe)
+
+#                                           Random Forest model
+
+set.seed(100)
+rf_model <- train(classe~., method = "rf", data = train, trControl = cv_settings)
+rf_model$finalModel
+rf_pred <- predict(rf_model, validate, type = "raw")
+confusionMatrix(rf_pred, validate$classe)
+
+
+#                                           Boosted tree model
+
+set.seed(100)
+gbm_model <- train(classe~., method = "gbm", data = train, trControl = cv_settings, verbose = F)
+plot(gbm_model)
+
+gbm_pred <- predict(gbm_model, validate)
+confusionMatrix(gbm_pred, validate$classe)
+
+#                                           LDA model
+
+set.seed(100)
+lda_model <- train(classe~., method = "lda", data = train, trControl = cv_settings)
+lda_pred <- predict(lda_model, validate)
+confusionMatrix(lda_pred, validate$classe)
+
+#                                         Ensemble model 
+
+# build new dataframe
+pred_df <- data.frame(tree_pred, rf_pred, gbm_pred, lda_pred, classe = validate$classe)
+
+# train new model on these predictions
+
+stacked_model <- train(classe~., data = pred_df, method = "gbm", trControl = cv_settings, verbose = F)
+
+# run predictions using stacked model
+
+stacked_pred <- predict(stacked_model, pred_df)
+confusionMatrix(stacked_pred, pred_df$classe)
+
+
+model_resamples <- resamples(list("LDA" = lda_model, 
+                                  "Random Forest" = rf_model, 
+                                  "GBM" = gbm_model, 
+                                  "CART" = tree_model, 
+                                  "Stacked Model" = stacked_model))
+bwplot(model_resamples)
+```
+                 
+#   Conclusions from training and validation
+                          
+```{r conclusion from training and validation}
+
+# 5 classification models were trained and validated:
+#   Classification tree, Random Forest, Gradient boosted machine, LDA model, and an Ensemble model. 
+# 
+# All models were trained using 5-fold cross-validation. 
+# 
+# The worst perfoming model was the classification tree with an accuracy of 48.4%
+# The best performing models were the Random Forest and the Ensemble model,  with accuracies of 99.3%
+# The Random forest model had an out of sample Error rate of 0.7%. 
+# 
+# The Random Forest model was chosen as the best perfoming model and used to make predictions on test data. 
+
+```
+                  
+#   Predict on test set
+                  
+```{r test set predictions, message= F}
+# preprocess and remove na columns
+test_data <- test_data[, -c(1:7)] # remove first 7 columns
+
+testing_clean <- test_data%>%select_if(~ !any(is.na(.))) # remove columns with missing values
+dim(testing_clean)
+dim(train)
+
+# prepare dataframe of predictions from other models for building the ensemble model
+
+test_pred_rf <- predict(rf_model, testing_clean)
+test_pred_rf
+```
